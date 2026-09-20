@@ -199,7 +199,7 @@ ratio is stored in `benchmarks/results/results.json`.
 Raw numbers in [benchmarks/results/results.json](benchmarks/results/results.json).
 
 | Metric                        | offload (10x VGG11) | in-RAM VGG11 |
-|--------------------------------|---------------:|---------------:|----------------:|
+|--------------------------------:|---------------:|----------------:|
 | Final train loss               | 1.982           | 1.691           |
 | Final test accuracy            | 15.63%          | 21.88%          |
 | Total training time (10 epochs) | 253.3 s       | 5.1 s            |
