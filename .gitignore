@@ -9,5 +9,6 @@ __pycache__/
 *.egg-info/
 *.log
 benchmark_capture.txt
+benchmark-final-*.txt
 pytest-*.txt
 preserved_stress*.json

@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--data-root", default="./data")
     parser.add_argument("--cache-dir", default="./over_ram_cache")
     parser.add_argument("--target-ram-multiple", type=float, default=1.15)
-    parser.add_argument("--memory-fraction", type=float, default=0.0)
+    parser.add_argument("--memory-fraction", type=float, default=0.7)
     parser.add_argument("--fresh-cache", action="store_true")
     parser.add_argument("--output", default="./benchmarks/results/over_ram_results.json")
     args = parser.parse_args()

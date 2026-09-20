@@ -88,6 +88,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fresh-cache", action="store_true", help="wipe offload cache before starting")
     parser.add_argument("--memory-fraction", type=float, default=0.7,
                          help="fraction of currently available system RAM used for temporary layer batches")
+    parser.add_argument("--offload-width-multiplier", type=float, default=1.0,
+                         help="width multiplier for the offloaded model only")
     return parser
 
 
@@ -111,7 +113,14 @@ def run(args) -> dict:
         if args.fresh_cache:
             shutil.rmtree(args.cache_dir, ignore_errors=True)
         store = DiskTensorStore(args.cache_dir)
-        model = build_vgg(args.arch, in_channels, num_classes, store, image_size=image_size).to(device)
+        model = build_vgg(
+            args.arch,
+            in_channels,
+            num_classes,
+            store,
+            image_size=image_size,
+            width_multiplier=args.offload_width_multiplier,
+        ).to(device)
         offloaded_keys = collect_param_keys(model)
         layer_groups = collect_param_groups(model)
         batches = store.configure_layer_batches(layer_groups, memory_fraction=args.memory_fraction)
@@ -176,6 +185,11 @@ def run(args) -> dict:
         "model": model,
         "test_loader": test_loader,
         "device": device,
+        "parameter_count": sum(p.numel() for p in model.parameters()),
+        "parameter_bytes": (
+            sum(store.get_nbytes(key) for key in offloaded_keys)
+            if args.offload else sum(p.numel() * p.element_size() for p in model.parameters())
+        ),
     }
 
 

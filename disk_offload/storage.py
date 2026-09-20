@@ -129,8 +129,10 @@ class DiskTensorStore:
     def clear_grad(self, key: str):
         bin_path, meta_path = self._paths(key, "grads")
         for p in (bin_path, meta_path):
-            if os.path.exists(p):
+            try:
                 os.remove(p)
+            except FileNotFoundError:
+                pass
 
     # ---- optimizer state ---------------------------------------------------
     def save_state(self, key: str, name: str, tensor: torch.Tensor):

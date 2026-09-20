@@ -88,8 +88,8 @@ def test_peak_memory_tracker_reports_positive_value():
     assert tracker.peak_mb > 0
 
 
-def test_layer_batches_match_baseline():
-    """One-layer temporary batches should preserve the baseline math."""
+def test_automatic_layer_batches_match_baseline():
+    """Automatic temporary layer batches should preserve baseline math."""
     torch.manual_seed(0)
     tmpdir = tempfile.mkdtemp(prefix="offload_batch_test_")
     try:

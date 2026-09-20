@@ -153,6 +153,8 @@ def run(args) -> dict:
         "model": model,
         "test_loader": test_loader,
         "device": device,
+        "parameter_count": sum(p.numel() for p in model.parameters()),
+        "parameter_bytes": sum(p.numel() * p.element_size() for p in model.parameters()),
     }
 
 

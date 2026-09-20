@@ -21,7 +21,8 @@ VGG_CFGS = {
 
 
 def build_vgg(cfg_name: str, in_channels: int, num_classes: int,
-              store: DiskTensorStore, image_size: int = 32) -> nn.Module:
+              store: DiskTensorStore, image_size: int = 32,
+              width_multiplier: float = 1.0) -> nn.Module:
     cfg: List[Union[int, str]] = VGG_CFGS[cfg_name]
     layers: List[nn.Module] = []
     c_in = in_channels
@@ -32,22 +33,25 @@ def build_vgg(cfg_name: str, in_channels: int, num_classes: int,
             layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
             spatial //= 2
         else:
+            scaled_v = max(1, round(v * width_multiplier))
             layers.append(OffloadedConv2d(
-                c_in, v, kernel_size=3, padding=1, store=store,
+                c_in, scaled_v, kernel_size=3, padding=1, store=store,
                 name=f"features.conv{conv_idx}",
             ))
-            layers.append(nn.BatchNorm2d(v))
+            layers.append(nn.BatchNorm2d(scaled_v))
             layers.append(nn.ReLU(inplace=True))
-            c_in = v
+            c_in = scaled_v
             conv_idx += 1
     features = OffloadedSequential(layers, store=store)
 
     flat_dim = c_in * spatial * spatial
     classifier = OffloadedSequential([
-        OffloadedLinear(flat_dim, 512, bias=True, store=store, name="classifier.fc0"),
+        OffloadedLinear(flat_dim, max(1, round(512 * width_multiplier)), bias=True,
+                        store=store, name="classifier.fc0"),
         nn.ReLU(inplace=True),
         nn.Dropout(0.5),
-        OffloadedLinear(512, num_classes, bias=True, store=store, name="classifier.fc1"),
+        OffloadedLinear(max(1, round(512 * width_multiplier)), num_classes,
+                        bias=True, store=store, name="classifier.fc1"),
     ], store=store)
 
     return _VGG(features, classifier)

@@ -2,12 +2,10 @@
 plain in-RAM training (normal_training/train.py) on the same architecture,
 dataset and hyperparameters.
 
-Three variants are compared:
-    - "offload (auto memory budget)": default --memory-fraction, i.e. the
-        memory-aware temporary layer-batch behavior described in the README.
-    - "offload (forced streaming)": --memory-fraction 0.0, i.e. each layer
-        gets its own temporary batch and streams from disk on every pass.
-  - "in-RAM baseline": normal_training, no offloading code involved at all.
+Two variants are compared:
+    - "offload (automatic RAM groups)": the memory-aware temporary
+        layer-batch behavior described in the README.
+    - "in-RAM baseline": normal_training, no offloading code involved at all.
 
 Measures, for each: per-epoch train loss / test accuracy, total training
 wall time, peak resident memory (RSS), and inference latency/throughput.
@@ -22,9 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
+import shutil
 import sys
 import time
+import uuid
 
+import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +36,12 @@ from normal_training import train as baseline_train  # noqa: E402
 
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 COLORS = ["#4C72B0", "#DD8452", "#55A868"]
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def benchmark_inference(model, test_loader, device, num_batches: int = 20, warmup: int = 3):
@@ -68,8 +76,11 @@ def run_variant(module, common: dict, extra: dict) -> dict:
     args = parser.parse_args([])
     for k, v in {**common, **extra}.items():
         setattr(args, k, v)
+    seed_everything(args.seed)
     result = module.run(args)
     result["inference"] = benchmark_inference(result["model"], result["test_loader"], result["device"])
+    if getattr(args, "offload", False):
+        shutil.rmtree(args.cache_dir, ignore_errors=True)
     return result
 
 
@@ -78,6 +89,8 @@ def to_serializable(result: dict) -> dict:
         "history": result["history"],
         "total_time_s": result["total_time_s"],
         "peak_rss_mb": result["peak_rss_mb"],
+        "parameter_count": result.get("parameter_count"),
+        "parameter_bytes": result.get("parameter_bytes"),
         "inference": result["inference"],
     }
 
@@ -160,43 +173,56 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--optimizer", choices=["sgd", "adam"], default="adam")
     parser.add_argument("--limit", type=int, default=None, help="subset size for quick runs")
+    parser.add_argument("--seed", type=int, default=20260920)
     parser.add_argument("--memory-fraction", type=float, default=0.7,
                          help="memory-fraction used for the 'offload (auto memory budget)' variant")
+    parser.add_argument("--offload-width-multiplier", type=float, default=3.16227766,
+                         help="offloaded VGG width multiplier, default is approximately 10x parameters")
     parser.add_argument("--out-dir", default=RESULTS_DIR)
     args = parser.parse_args()
 
     common = dict(dataset=args.dataset, arch=args.arch, epochs=args.epochs,
-                  batch_size=args.batch_size, lr=args.lr, optimizer=args.optimizer, limit=args.limit)
+                  batch_size=args.batch_size, lr=args.lr, optimizer=args.optimizer,
+                  limit=args.limit, seed=args.seed,
+                  offload_width_multiplier=args.offload_width_multiplier)
 
     results = {}
 
-    print(">>> Running disk-offloaded training (auto memory budget)...")
-    results["offload (auto memory budget)"] = run_variant(
+    print(">>> Running disk-offloaded training (automatic RAM groups)...")
+    cache_suffix = uuid.uuid4().hex[:10]
+    results["offload (automatic RAM groups, 10x model)"] = run_variant(
         offload_train, common,
         extra={"offload": True, "fresh_cache": True, "memory_fraction": args.memory_fraction,
-               "cache_dir": "./offload_cache_auto"},
-    )
-
-    print(">>> Running disk-offloaded training (forced streaming, memory-fraction=0)...")
-    results["offload (forced streaming)"] = run_variant(
-        offload_train, common,
-        extra={"offload": True, "fresh_cache": True, "memory_fraction": 0.0,
-               "cache_dir": "./offload_cache_streamed"},
+               "cache_dir": f"./offload_cache_auto_{cache_suffix}"},
     )
 
     print(">>> Running in-RAM baseline training...")
     results["in-RAM baseline"] = run_variant(baseline_train, common, extra={})
 
-    print_summary(results)
+    baseline_bytes = results["in-RAM baseline"]["parameter_bytes"]
+    offload_bytes = results["offload (automatic RAM groups, 10x model)"]["parameter_bytes"]
+    results["parameter_ratio"] = offload_bytes / baseline_bytes
+
+    variant_results = {
+        label: result
+        for label, result in results.items()
+        if isinstance(result, dict) and "history" in result
+    }
+    print_summary(variant_results)
 
     os.makedirs(args.out_dir, exist_ok=True)
     with open(os.path.join(args.out_dir, "results.json"), "w") as f:
         json.dump({
             "config": common,
-            **{label: to_serializable(res) for label, res in results.items()},
+            **{
+                label: to_serializable(res)
+                for label, res in results.items()
+                if isinstance(res, dict) and "history" in res
+            },
+            "parameter_ratio": results["parameter_ratio"],
         }, f, indent=2)
 
-    make_plots(results, args.out_dir)
+    make_plots(variant_results, args.out_dir)
     print(f"\nSaved results + plots to {args.out_dir}")
 
 
