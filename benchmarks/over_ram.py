@@ -21,7 +21,7 @@ from torchvision import datasets, transforms
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from disk_offload import DiskTensorStore, PeakMemoryTracker, collect_param_keys
+from disk_offload import DiskTensorStore, PeakMemoryTracker, collect_param_groups, collect_param_keys
 from models.over_ram import build_over_ram_mlp
 
 
@@ -54,7 +54,10 @@ def main():
         target_ram_multiple=args.target_ram_multiple,
     )
     parameter_keys = collect_param_keys(model)
-    resident_keys = store.auto_configure_residency(parameter_keys, memory_fraction=args.memory_fraction)
+    batches = store.configure_layer_batches(
+        collect_param_groups(model),
+        memory_fraction=args.memory_fraction,
+    )
     init_seconds = time.time() - start_init
 
     transform = transforms.Compose([
@@ -96,7 +99,7 @@ def main():
             "parameter_tensors": len(parameter_keys),
             "parameter_size_gb": gb(parameter_bytes),
             "parameter_to_physical_ram_ratio": parameter_bytes / memory.total,
-            "resident_tensors": len(resident_keys),
+            "temporary_batches": len(batches),
         },
         "capacity_test": {
             "cache_size_gb": gb(cache_bytes),

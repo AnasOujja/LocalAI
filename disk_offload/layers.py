@@ -114,12 +114,28 @@ class OffloadedSequential(nn.Module):
         ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for i, layer in enumerate(self.layers):
-            nxt = next((j for j in self._offload_indices if j > i), None)
-            if nxt is not None:
-                for key in self.layers[nxt].param_keys():
-                    self.store.prefetch(key)
+        for position, layer in enumerate(self.layers):
+            next_batch = None
+            if hasattr(layer, "param_keys"):
+                keys = layer.param_keys()
+                self.store.activate_batch_for(keys[0])
+                next_layer = next(
+                    (self.layers[index] for index in self._offload_indices if index > position),
+                    None,
+                )
+                if next_layer is not None:
+                    next_keys = next_layer.param_keys()
+                    next_batch = self.store.batch_id(next_keys[0])
+                    for key in next_keys:
+                        self.store.prefetch(key)
+
             x = layer(x)
+
+            if hasattr(layer, "param_keys"):
+                current_batch = self.store.batch_id(layer.param_keys()[0])
+                if next_batch != current_batch:
+                    self.store.release_active_batch()
+        self.store.release_active_batch()
         return x
 
     def param_keys(self) -> List[str]:
@@ -136,3 +152,12 @@ def collect_param_keys(module: nn.Module) -> List[str]:
         if hasattr(m, "param_keys") and not isinstance(m, OffloadedSequential):
             keys.extend(m.param_keys())
     return keys
+
+
+def collect_param_groups(module: nn.Module) -> List[List[str]]:
+    """Collect each offloaded layer's keys as an indivisible group."""
+    groups: List[List[str]] = []
+    for m in module.modules():
+        if hasattr(m, "param_keys") and not isinstance(m, OffloadedSequential):
+            groups.append(m.param_keys())
+    return groups

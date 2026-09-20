@@ -15,7 +15,7 @@
     "parameter_tensors": 39,
     "parameter_size_gb": 9.031555213034153,
     "parameter_to_physical_ram_ratio": 1.1596187105731781,
-    "resident_tensors": 0
+    "temporary_batches": 38
   },
   "capacity_test": {
     "cache_size_gb": 9.031555213034153,

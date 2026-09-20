@@ -1,15 +1,12 @@
-"""Disk-backed tensor storage with background prefetching and a memory-aware
-residency budget.
+"""Disk-backed tensor storage with background prefetching and RAM-sized groups.
 
 Parameters, gradients and optimizer states normally live on disk as raw
 binary files, materialized in RAM only for the brief window they are
-actually needed. But not every layer needs to pay that disk-I/O tax: if a
-layer's weights would fit comfortably in *currently available* RAM, there's
-no reason to stream it from disk on every pass. `auto_configure_residency`
-inspects available system memory once, decides how many parameters can be
-pinned permanently in RAM, and promotes them -- so only the layers that
-actually don't fit keep streaming from disk. Callers never have to decide
-this layer by layer.
+actually needed. `configure_layer_batches` inspects available system memory
+once, partitions whole layers into contiguous RAM-sized groups, and loads one
+group at a time during forward and backward. Groups are temporary. They are
+not pinned permanently, so layers still go to RAM and come back out even
+when a complete group fits.
 
 A small background thread pool lets the caller prefetch the *next*
 streamed layer's weights while the *current* layer is still computing,
@@ -22,7 +19,7 @@ import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Dict, Iterable, Optional, Set
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 import psutil
@@ -41,12 +38,11 @@ class DiskTensorStore:
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
-        # Keys promoted to full RAM residency: no disk I/O at all for their
-        # parameter, gradient or optimizer state once here.
-        self._resident_keys: Set[str] = set()
-        self._resident_params: Dict[str, torch.Tensor] = {}
-        self._resident_grads: Dict[str, torch.Tensor] = {}
-        self._resident_state: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._batch_for_key: dict[str, int] = {}
+        self._batches: list[list[str]] = []
+        self._active_batch_id: Optional[int] = None
+        self._active_batch_params: Dict[str, torch.Tensor] = {}
+        self._backward_remaining: dict[int, int] = {}
 
     # ---- path helpers -------------------------------------------------
     def _paths(self, key: str, subdir: str = ""):
@@ -95,14 +91,11 @@ class DiskTensorStore:
 
     # ---- parameters -----------------------------------------------------
     def save(self, key: str, tensor: torch.Tensor):
-        if key in self._resident_keys:
-            self._resident_params[key] = tensor.detach().to("cpu").contiguous().clone()
-            return
         self._write(key, tensor)
 
     def load(self, key: str) -> torch.Tensor:
-        if key in self._resident_keys:
-            return self._resident_params[key]
+        if key in self._active_batch_params:
+            return self._active_batch_params[key]
         with self._lock:
             fut = self._futures.pop(key, None)
         if fut is not None:
@@ -111,34 +104,22 @@ class DiskTensorStore:
 
     def prefetch(self, key: str):
         """Kick off a background read for `key` if not already in flight."""
-        if key in self._resident_keys:
-            return  # already in RAM, nothing to prefetch
         with self._lock:
             if key in self._futures:
                 return
             self._futures[key] = self._executor.submit(self._read, key)
 
     def exists(self, key: str) -> bool:
-        return key in self._resident_keys or self._exists(key)
+        return self._exists(key)
 
     # ---- gradients --------------------------------------------------------
     def save_grad(self, key: str, grad: torch.Tensor, accumulate: bool = False):
-        if key in self._resident_keys:
-            if accumulate and key in self._resident_grads:
-                grad = self._resident_grads[key] + grad
-            self._resident_grads[key] = grad.detach().clone()
-            return
         if accumulate and self._exists(key, "grads"):
             existing = self._read(key, "grads")
             grad = existing + grad
         self._write(key, grad, "grads")
 
     def load_grad(self, key: str, missing_ok: bool = True) -> Optional[torch.Tensor]:
-        if key in self._resident_keys:
-            grad = self._resident_grads.get(key)
-            if grad is None and not missing_ok:
-                raise FileNotFoundError(f"No gradient stored for {key!r}")
-            return grad
         if not self._exists(key, "grads"):
             if missing_ok:
                 return None
@@ -146,9 +127,6 @@ class DiskTensorStore:
         return self._read(key, "grads")
 
     def clear_grad(self, key: str):
-        if key in self._resident_keys:
-            self._resident_grads.pop(key, None)
-            return
         bin_path, meta_path = self._paths(key, "grads")
         for p in (bin_path, meta_path):
             if os.path.exists(p):
@@ -156,24 +134,17 @@ class DiskTensorStore:
 
     # ---- optimizer state ---------------------------------------------------
     def save_state(self, key: str, name: str, tensor: torch.Tensor):
-        if key in self._resident_keys:
-            self._resident_state.setdefault(key, {})[name] = tensor.detach().clone()
-            return
         self._write(f"{key}.{name}", tensor, "state")
 
     def load_state(self, key: str, name: str, default: torch.Tensor) -> torch.Tensor:
-        if key in self._resident_keys:
-            return self._resident_state.get(key, {}).get(name, default.clone())
         if not self._exists(f"{key}.{name}", "state"):
             return default.clone()
         return self._read(f"{key}.{name}", "state")
 
-    # ---- memory-aware residency --------------------------------------------
+    # ---- memory-aware sizing -----------------------------------------------
     def get_nbytes(self, key: str) -> int:
         """Size in bytes of a (disk-backed) parameter, read from its on-disk
         shape/dtype metadata without loading the actual tensor data."""
-        if key in self._resident_keys:
-            return self._resident_params[key].numel() * self._resident_params[key].element_size()
         _, meta_path = self._paths(key)
         with open(meta_path) as f:
             meta = json.load(f)
@@ -182,50 +153,80 @@ class DiskTensorStore:
             nbytes *= dim
         return nbytes
 
-    def is_resident(self, key: str) -> bool:
-        return key in self._resident_keys
+    # ---- temporary layer batches ------------------------------------------
+    def configure_layer_batches(
+        self,
+        layer_groups: Iterable[Iterable[str]],
+        memory_fraction: float = 0.7,
+    ) -> list[list[str]]:
+        """Partition complete layers into temporary groups that fit a RAM
+        budget based on currently available memory.
 
-    def make_resident(self, key: str):
-        """Promote an already disk-backed parameter to live permanently in
-        RAM: no further disk I/O for its weight/bias, gradient, or optimizer
-        state."""
-        if key in self._resident_keys:
-            return
-        self._resident_params[key] = self._read(key)
-        self._resident_keys.add(key)
-
-    def auto_configure_residency(self, keys: Iterable[str], memory_fraction: float = 0.7) -> Set[str]:
-        """Decide, based on *currently available* system RAM, how many of
-        `keys` can be kept permanently resident instead of streamed from
-        disk on every forward/backward -- so the caller doesn't have to make
-        that call per layer.
-
-        Greedily fits the largest parameters first into a budget of
-        `memory_fraction` of available RAM (leaving the rest for the OS,
-        activations, and everything else the process needs), promotes the
-        ones that fit, and leaves the remainder disk-offloaded as before.
+        The groups remain contiguous in model order. A single layer larger
+        than the budget still gets its own group because it must remain
+        computable.
         """
-        keys = list(keys)
-        sizes = {k: self.get_nbytes(k) for k in keys}
         budget = int(psutil.virtual_memory().available * memory_fraction)
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_bytes = 0
+        for layer_group in layer_groups:
+            keys = list(layer_group)
+            layer_bytes = sum(self.get_nbytes(key) for key in keys)
+            if current and current_bytes + layer_bytes > budget:
+                batches.append(current)
+                current = []
+                current_bytes = 0
+            current.extend(keys)
+            current_bytes += layer_bytes
+            if budget == 0 or layer_bytes > budget:
+                batches.append(current)
+                current = []
+                current_bytes = 0
+        if current:
+            batches.append(current)
 
-        resident: Set[str] = set()
-        remaining = budget
-        for key, nbytes in sorted(sizes.items(), key=lambda kv: -kv[1]):
-            if nbytes <= remaining:
-                resident.add(key)
-                remaining -= nbytes
+        self._batches = batches
+        self._batch_for_key = {
+            key: batch_id
+            for batch_id, batch in enumerate(batches)
+            for key in batch
+        }
+        self._backward_remaining = {
+            batch_id: sum(key.endswith(".weight") for key in batch)
+            for batch_id, batch in enumerate(batches)
+        }
+        return batches
 
-        for key in resident:
-            self.make_resident(key)
-        return resident
+    def batch_id(self, key: str) -> Optional[int]:
+        return self._batch_for_key.get(key)
 
-    def flush_resident_to_disk(self):
-        """Write current values of all resident parameters back to disk, so
-        the cache directory reflects a full, up-to-date checkpoint even for
-        keys that never touched disk again after being promoted."""
-        for key, tensor in self._resident_params.items():
-            self._write(key, tensor)
+    def activate_batch_for(self, key: str):
+        """Load the complete temporary group containing `key` into RAM."""
+        batch_id = self._batch_for_key.get(key)
+        if batch_id is None or batch_id == self._active_batch_id:
+            return
+        self.release_active_batch()
+        self._active_batch_id = batch_id
+        self._active_batch_params = {
+            batch_key: self.load(batch_key)
+            for batch_key in self._batches[batch_id]
+        }
+
+    def release_active_batch(self):
+        self._active_batch_params.clear()
+        self._active_batch_id = None
+
+    def begin_backward_for(self, key: str):
+        self.activate_batch_for(key)
+
+    def finish_backward_for(self, key: str):
+        batch_id = self._batch_for_key.get(key)
+        if batch_id is None:
+            return
+        self._backward_remaining[batch_id] -= 1
+        if self._backward_remaining[batch_id] <= 0:
+            self.release_active_batch()
 
     def shutdown(self):
         self._executor.shutdown(wait=True)

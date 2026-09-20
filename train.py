@@ -18,7 +18,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
-from disk_offload import DiskOffloadedAdam, DiskOffloadedSGD, DiskTensorStore, PeakMemoryTracker, collect_param_keys
+from disk_offload import (
+    DiskOffloadedAdam,
+    DiskOffloadedSGD,
+    DiskTensorStore,
+    PeakMemoryTracker,
+    collect_param_groups,
+    collect_param_keys,
+)
 from models.baseline_cnn import build_vgg_baseline
 from models.cnn import build_vgg
 
@@ -80,8 +87,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-offload", dest="offload", action="store_false")
     parser.add_argument("--fresh-cache", action="store_true", help="wipe offload cache before starting")
     parser.add_argument("--memory-fraction", type=float, default=0.7,
-                         help="fraction of currently available system RAM allowed for keeping "
-                              "layers permanently resident instead of streaming them from disk")
+                         help="fraction of currently available system RAM used for temporary layer batches")
     return parser
 
 
@@ -107,14 +113,15 @@ def run(args) -> dict:
         store = DiskTensorStore(args.cache_dir)
         model = build_vgg(args.arch, in_channels, num_classes, store, image_size=image_size).to(device)
         offloaded_keys = collect_param_keys(model)
-
-        # Decide once, based on currently available RAM, which layers can
-        # stay fully resident instead of streaming from disk every pass --
-        # no need to pick this per layer by hand.
-        resident_keys = store.auto_configure_residency(offloaded_keys, memory_fraction=args.memory_fraction)
-        resident_bytes = sum(store.get_nbytes(k) for k in resident_keys)
-        print(f"[memory budget] {len(resident_keys)}/{len(offloaded_keys)} parameter tensors kept resident in RAM "
-              f"({resident_bytes / (1024 ** 2):.1f} MB); {len(offloaded_keys) - len(resident_keys)} still streamed from disk")
+        layer_groups = collect_param_groups(model)
+        batches = store.configure_layer_batches(layer_groups, memory_fraction=args.memory_fraction)
+        largest_batch_bytes = max(
+            (sum(store.get_nbytes(key) for key in batch) for batch in batches),
+            default=0,
+        )
+        print(f"[memory budget] {len(batches)} temporary layer batches; "
+              f"largest batch {largest_batch_bytes / (1024 ** 2):.1f} MB; "
+              f"{len(offloaded_keys)} parameter tensors streamed")
 
         opt_cls = DiskOffloadedAdam if args.optimizer == "adam" else DiskOffloadedSGD
         optimizer = opt_cls(store, offloaded_keys, lr=args.lr)
@@ -161,9 +168,6 @@ def run(args) -> dict:
             print(f"[epoch {epoch}] avg_loss={avg_loss:.4f} test_acc={acc:.4f} epoch_time={epoch_time:.1f}s")
             history.append({"epoch": epoch, "train_loss": avg_loss, "test_acc": acc, "epoch_time_s": epoch_time})
         elapsed = time.time() - start
-
-    if args.offload:
-        store.flush_resident_to_disk()
 
     return {
         "history": history,

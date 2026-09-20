@@ -3,13 +3,10 @@ plain in-RAM training (normal_training/train.py) on the same architecture,
 dataset and hyperparameters.
 
 Three variants are compared:
-  - "offload (auto memory budget)": default --memory-fraction, i.e. the
-    memory-aware residency behavior described in the README -- layers that
-    fit in currently-available RAM are kept fully resident automatically.
-  - "offload (forced streaming)": --memory-fraction 0.0, i.e. every layer
-    streams from disk on every pass, regardless of available RAM. This is
-    the worst case / what you get on a machine where the model genuinely
-    doesn't fit in RAM.
+    - "offload (auto memory budget)": default --memory-fraction, i.e. the
+        memory-aware temporary layer-batch behavior described in the README.
+    - "offload (forced streaming)": --memory-fraction 0.0, i.e. each layer
+        gets its own temporary batch and streams from disk on every pass.
   - "in-RAM baseline": normal_training, no offloading code involved at all.
 
 Measures, for each: per-epoch train loss / test accuracy, total training

@@ -9,7 +9,13 @@ import tempfile
 import torch
 import torch.nn as nn
 
-from disk_offload import DiskOffloadedAdam, DiskTensorStore, PeakMemoryTracker, collect_param_keys
+from disk_offload import (
+    DiskOffloadedAdam,
+    DiskTensorStore,
+    PeakMemoryTracker,
+    collect_param_groups,
+    collect_param_keys,
+)
 from disk_offload.layers import OffloadedConv2d, OffloadedLinear
 from models.baseline_cnn import build_vgg_baseline
 from models.cnn import build_vgg
@@ -82,11 +88,10 @@ def test_peak_memory_tracker_reports_positive_value():
     assert tracker.peak_mb > 0
 
 
-def test_mixed_residency_matches_baseline():
-    """Promoting some (but not all) layers to RAM residency shouldn't
-    change the math -- it only changes where the data physically lives."""
+def test_layer_batches_match_baseline():
+    """One-layer temporary batches should preserve the baseline math."""
     torch.manual_seed(0)
-    tmpdir = tempfile.mkdtemp(prefix="offload_residency_test_")
+    tmpdir = tempfile.mkdtemp(prefix="offload_batch_test_")
     try:
         store = DiskTensorStore(tmpdir)
         offloaded_model = build_vgg("vgg11", in_channels=3, num_classes=4, store=store, image_size=32)
@@ -94,10 +99,11 @@ def test_mixed_residency_matches_baseline():
         _sync_baseline_from_store(offloaded_model, baseline_model, store)
 
         offloaded_keys = collect_param_keys(offloaded_model)
-        for key in offloaded_keys[::2]:  # promote every other parameter to full residency
-            store.make_resident(key)
-        assert any(store.is_resident(k) for k in offloaded_keys)
-        assert not all(store.is_resident(k) for k in offloaded_keys)
+        batches = store.configure_layer_batches(
+            collect_param_groups(offloaded_model),
+            memory_fraction=0.0,
+        )
+        assert len(batches) == len(collect_param_groups(offloaded_model))
 
         off_optimizer = DiskOffloadedAdam(store, offloaded_keys, lr=1e-3)
         base_optimizer = torch.optim.Adam(

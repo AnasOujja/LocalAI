@@ -5,9 +5,9 @@
 This project was tested on an Intel Core i5-1135G7 laptop with 7.79 GB of
 physical RAM, four physical cores, eight logical processors, and about 81.30
 GB of free system-drive space. The memory-aware trainer now makes one global
-decision from live system availability. Parameters that fit the configured
-RAM budget stay resident. Parameters that do not fit remain on disk and are
-streamed during computation.
+decision from live system availability. Complete layers are partitioned into
+temporary groups that fit the configured RAM budget. A group is loaded for
+the work that needs it, then released so the next group can take its place.
 
 The decisive experiment used a model larger than RAM. The `OverRAMMLP` held
 9.03 GB of float32 parameters, or 1.16 times physical RAM. All 39 parameter
@@ -45,7 +45,7 @@ flowchart LR
     E[(Disk cache 9.03 GB)] --> B
     E --> C
     E --> D
-    C --> F[One layer in RAM at a time]
+    C --> F[One RAM-sized group at a time]
 ```
 
 Each 8192 by 8192 hidden weight matrix is about 256 MiB. The complete
@@ -60,7 +60,8 @@ Command:
 python benchmarks/over_ram.py --cache-dir .\over_ram_cache_final
 ```
 
-The command creates the disk-backed model, forces zero permanent residency,
+The command creates the disk-backed model, forces one layer per temporary
+group with zero reserved batch budget,
 loads the MNIST test set, and evaluates one image. It does not run a full
 training epoch because that would produce a long disk-I/O benchmark with
 little useful information on this hardware.
@@ -73,7 +74,8 @@ little useful information on this hardware.
 | Parameter size | 9.03 GB |
 | Physical RAM | 7.79 GB |
 | Parameter-to-RAM ratio | 1.16x |
-| Permanently resident tensors | 0 |
+| Temporary layer batches | 38 |
+| Temporary forward group size | One layer |
 | Cache creation time | 101.0 s |
 | Forward time for one MNIST image | 17.0 s |
 | Peak RSS during forward | 0.857 GB |
@@ -94,20 +96,22 @@ passes plus optimizer reads and writes. A fast NVMe drive, larger batches,
 activation checkpointing, and fewer optimizer state transfers would improve
 throughput.
 
-The automatic memory policy is still important for practical use. When a
-model partially fits, the trainer keeps the largest useful tensors resident
-within the configured fraction of available RAM and streams only the rest.
-On this machine, `--memory-fraction 0.0` is useful for proving the fully
-streamed path, while the default `0.7` is the practical setting.
+The automatic memory policy is still important for practical use. It packs
+contiguous complete layers into temporary groups using the configured
+fraction of available RAM. During forward and backward, those groups go into
+RAM and come back out as the computation moves through the model. On this
+machine, `--memory-fraction 0.0` is useful for proving one-layer groups,
+while the default `0.7` creates larger groups when the available RAM allows
+them.
 
 ## Validation
 
-The repository test suite contains 12 tests covering layer-level numerical
-equivalence, optimizer updates, mixed RAM and disk residency, cache recovery,
+The repository test suite contains 10 tests covering layer-level numerical
+equivalence, optimizer updates, temporary layer batches, cache recovery,
 Windows file-lock retries, and training convergence. The final run passed:
 
 ```text
-12 passed in 32.86s
+10 passed
 ```
 
 The measured raw result is stored in

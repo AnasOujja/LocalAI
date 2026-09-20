@@ -1,5 +1,11 @@
 from .storage import DiskTensorStore
-from .layers import OffloadedLinear, OffloadedConv2d, OffloadedSequential, collect_param_keys
+from .layers import (
+    OffloadedLinear,
+    OffloadedConv2d,
+    OffloadedSequential,
+    collect_param_keys,
+    collect_param_groups,
+)
 from .optim import DiskOffloadedSGD, DiskOffloadedAdam
 from .memory_utils import PeakMemoryTracker
 
@@ -9,6 +15,7 @@ __all__ = [
     "OffloadedConv2d",
     "OffloadedSequential",
     "collect_param_keys",
+    "collect_param_groups",
     "DiskOffloadedSGD",
     "DiskOffloadedAdam",
     "PeakMemoryTracker",

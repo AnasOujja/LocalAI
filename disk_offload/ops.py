@@ -41,6 +41,7 @@ class OffloadedLinearFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         (input,) = ctx.saved_tensors
         store: DiskTensorStore = ctx.store
+        store.begin_backward_for(ctx.weight_key)
         weight = store.load(ctx.weight_key)
 
         grad_input = grad_output.matmul(weight) if ctx.needs_input_grad[0] else None
@@ -55,6 +56,7 @@ class OffloadedLinearFn(torch.autograd.Function):
             store.save_grad(ctx.bias_key, grad_bias)
 
         del weight
+        store.finish_backward_for(ctx.weight_key)
         return grad_input, None, None, None, None
 
 
@@ -80,6 +82,7 @@ class OffloadedConv2dFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         (input,) = ctx.saved_tensors
         store: DiskTensorStore = ctx.store
+        store.begin_backward_for(ctx.weight_key)
         weight = store.load(ctx.weight_key)
 
         grad_input = None
@@ -100,4 +103,5 @@ class OffloadedConv2dFn(torch.autograd.Function):
             store.save_grad(ctx.bias_key, grad_bias)
 
         del weight
+        store.finish_backward_for(ctx.weight_key)
         return grad_input, None, None, None, None, None, None, None, None
