@@ -1,0 +1,77 @@
+{
+  "config": {
+    "dataset": "mnist",
+    "arch": "vgg11",
+    "epochs": 2,
+    "batch_size": 64,
+    "lr": 0.001,
+    "optimizer": "adam",
+    "limit": 1000
+  },
+  "offload (auto memory budget)": {
+    "history": [
+      {
+        "epoch": 0,
+        "train_loss": 2.0172920376062393,
+        "test_acc": 0.191,
+        "epoch_time_s": 13.079817056655884
+      },
+      {
+        "epoch": 1,
+        "train_loss": 0.9486422799527645,
+        "test_acc": 0.65,
+        "epoch_time_s": 13.042598724365234
+      }
+    ],
+    "total_time_s": 26.122415781021118,
+    "peak_rss_mb": 527.15625,
+    "inference": {
+      "avg_latency_ms": 152.09482266352728,
+      "throughput_samples_per_s": 408.65195189021256
+    }
+  },
+  "offload (forced streaming)": {
+    "history": [
+      {
+        "epoch": 0,
+        "train_loss": 2.084870181977749,
+        "test_acc": 0.349,
+        "epoch_time_s": 41.128225564956665
+      },
+      {
+        "epoch": 1,
+        "train_loss": 1.3639111779630184,
+        "test_acc": 0.533,
+        "epoch_time_s": 65.0621829032898
+      }
+    ],
+    "total_time_s": 106.20293927192688,
+    "peak_rss_mb": 497.14453125,
+    "inference": {
+      "avg_latency_ms": 152.87408461937537,
+      "throughput_samples_per_s": 406.56888516190486
+    }
+  },
+  "in-RAM baseline": {
+    "history": [
+      {
+        "epoch": 0,
+        "train_loss": 2.1298163905739784,
+        "test_acc": 0.225,
+        "epoch_time_s": 11.627331495285034
+      },
+      {
+        "epoch": 1,
+        "train_loss": 1.5210278630256653,
+        "test_acc": 0.227,
+        "epoch_time_s": 11.780406951904297
+      }
+    ],
+    "total_time_s": 23.409730672836304,
+    "peak_rss_mb": 376.71484375,
+    "inference": {
+      "avg_latency_ms": 133.41646928053635,
+      "throughput_samples_per_s": 465.86337120910116
+    }
+  }
+}

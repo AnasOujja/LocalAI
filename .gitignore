@@ -1,0 +1,13 @@
+offload_cache/
+offload_cache_*/
+over_ram_cache*/
+.venv/
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+*.log
+benchmark_capture.txt
+pytest-*.txt
+preserved_stress*.json

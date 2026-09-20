@@ -1,0 +1,29 @@
+{
+  "hardware": {
+    "cpu": "Intel(R) Core(TM) i5-1135G7",
+    "logical_processors": 8,
+    "physical_cores": 4,
+    "physical_ram_gb": 7.788383483886719,
+    "available_ram_at_start_gb": 0.4159278869628906,
+    "free_disk_at_start_gb": 81.3,
+    "torch_version": "2.14.0+cpu"
+  },
+  "model": {
+    "name": "OverRAMMLP",
+    "width": 8192,
+    "hidden_layers": 36,
+    "parameter_tensors": 39,
+    "parameter_size_gb": 9.031555213034153,
+    "parameter_to_physical_ram_ratio": 1.1596187105731781,
+    "resident_tensors": 0
+  },
+  "capacity_test": {
+    "cache_size_gb": 9.031555213034153,
+    "initialization_seconds": 100.98024415969849,
+    "forward_seconds": 17.032508611679077,
+    "peak_rss_gb": 0.8568611145019531,
+    "mnist_label": 7,
+    "prediction": 0,
+    "memory_fraction": 0.0
+  }
+}
