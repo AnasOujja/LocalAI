@@ -287,9 +287,7 @@ python benchmarks/over_ram.py --cache-dir .\over_ram_cache_final
 - Each offloaded layer's weight is read from disk **twice** per training
   step (forward + backward); prefetching hides most of this but a fast
   disk (SSD/NVMe) matters a lot for throughput.
-- Currently CPU-only, matching the "use whole RAM + CPU compute" goal;
-  extending `DiskTensorStore` to stream disk → pinned host memory → GPU
-  would let the same technique offload GPU-VRAM-bound models too.
+- Currently CPU-only.
 
 ## Author
 
